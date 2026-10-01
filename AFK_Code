@@ -1,0 +1,65 @@
+import numpy as np
+import pyautogui
+import serial
+import time
+import cv2
+import os
+
+arduino_port = 'COM4'
+baud_rate = 115200
+
+pyautogui.useImageNotFoundException(False)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_TO_FIND = os.path.join(SCRIPT_DIR, 'full_health.png').replace('\\', '/')
+CONFIDENCE_THRESHOLD = 0.85
+
+arduino = serial.Serial(port=arduino_port, baudrate=baud_rate, timeout=1)
+time.sleep(2)
+
+def send_command(command):
+    full_command = f"{command}\n"
+    arduino.write(full_command.encode('utf-8'))
+    response = arduino.readline().decode('utf-8').strip()
+    return response
+
+def under_attack_by_image():
+    print("AFK watcher has started... Press Ctrl+C in the terminal to stop.")
+
+    heart_template = cv2.imread(IMAGE_TO_FIND, cv2.IMREAD_GRAYSCALE)
+    if heart_template is None:
+        print(f"Error: Could not load the image at {IMAGE_TO_FIND}. check the file name.")
+        return
+
+    w, h = heart_template.shape[::-1]
+
+    try:
+        while True:
+            try:
+                match_location = pyautogui.locateOnScreen(IMAGE_TO_FIND, confidence=CONFIDENCE_THRESHOLD)
+
+                if match_location is not None:
+                    left = int(match_location.left)
+                    top = int(match_location.top)
+
+                    print(f"\nDamage detected at screen position: {match_location}")
+                    print("sending command...")
+
+                    reply1 = send_command("PAUSE")
+                    print(f"Arduino says: {reply1}")
+
+                    arduino.close()
+                    print("Arduino connection closed. Exiting...")
+                    break
+                else:
+                    print("No damage detected.   ", end="\r")
+            except pyautogui.useImageNotFoundException:
+                print("Image can not be found. Continuing...", end="\r")
+            except Exception as e:
+                print(f"\nInternal loop Error details: {type(e).__name__} - {e}")
+
+                time.sleep(0.5)
+    finally:
+        if arduino.is_open:
+            arduino.close()
+            print("Arduino connection closed. Exiting...")
