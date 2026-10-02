@@ -4,9 +4,12 @@ import serial
 import time
 import cv2
 import os
+import urllib.request
 
 arduino_port = 'COM4'
 baud_rate = 115200
+
+NTFY_TOPIC = "mc_heart_alert"
 
 pyautogui.useImageNotFoundException(False)
 
@@ -23,6 +26,21 @@ def send_command(command):
     response = arduino.readline().decode('utf-8').strip()
     return response
 
+def send_ntfy_notification(message):
+    """Send a push notification directly to your phone using ntfy."""
+    try:
+        url = f"https://ntfy.sh{NTFY_TOPIC}"
+        headers = {
+            "title": "Minecraft Health Alert",
+            "Priority": "high",
+            "Tags": "warning,heart"
+        }
+        req = urllib.request.Request(url, data=message.encode('utf-8'), headers=headers)
+        with urllib.request.urlopen(req) as response:
+            print(f"\n[ntfy] Notification sent: '{message}'")
+    except Exception as e:
+        print(f"\n[ntfy] Failed to send notification: {e}")
+
 def under_attack_by_image():
     print("AFK watcher has started... Press Ctrl+C in the terminal to stop.")
 
@@ -32,18 +50,39 @@ def under_attack_by_image():
         return
 
     w, h = heart_template.shape[::-1]
+    has_taken_damage = False
 
     try:
         while True:
             try:
-                match_location = pyautogui.locateOnScreen(IMAGE_TO_FIND, confidence=CONFIDENCE_THRESHOLD)
+                screenshot = pyautogui.screenshot()
+                screen_np = np.array(screenshot)
+                screenbgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+                screen_gray = cv2.cvtColor(screenbgr, cv2.COLOR_BGR2GRAY)
 
-                if match_location is not None:
-                    left = int(match_location.left)
-                    top = int(match_location.top)
+                result = cv2.matchTemplate(screen_gray, heart_template, cv2.TM_CCOEFF_NORMED)
+                locations = np.where(result >= CONFIDENCE_THRESHOLD)
 
-                    print(f"\nDamage detected at screen position: {match_location}")
-                    print("sending command...")
+                rectangles = []
+                for pt in zip(*locations[::-1]):
+                    rectangles.append([int(pt[0]), int(pt[1]), int(w), int(h)])
+                    rectangles.append([int(pt[0]), int(pt[1]), int(w), int(h)])
+
+                rectangles, weight = cv2.groupRectangles(rectangles, groupThreshold=1, eps=0.2)
+                heart_count = len(rectangles)
+
+                if heart_count >= 10:
+                    has_taken_damage = False
+                    print(f"Health full. Hearts detected: {heart_count}  ", end="\r")
+
+                elif heart_count < 10 and not has_taken_damage:
+                    has_taken_damage = True
+                    print(f"\n[!] Damage detected! Hearts remaining: {heart_count}. Sending notification...")
+                    send_ntfy_notification(f"You took damage in Minecraft! Hearts remaining: {heart_count}.")
+                if heart_count < 5:
+                    print(f"\n[!] Critical health! Hearts remaining: {heart_count}. Sending notification and pausing the game...")
+                    print("Activating physical motor trigger...")
+                    send_ntfy_notification(f"Critical health! Hearts remaining: {heart_count}. Pausing the game...")
 
                     reply1 = send_command("PAUSE")
                     print(f"Arduino says: {reply1}")
@@ -51,15 +90,19 @@ def under_attack_by_image():
                     arduino.close()
                     print("Arduino connection closed. Exiting...")
                     break
-                else:
-                    print("No damage detected.   ", end="\r")
-            except pyautogui.useImageNotFoundException:
-                print("Image can not be found. Continuing...", end="\r")
+
+                elif heart_count < 10:
+                    print(f"[!] Damage state. Hearts remaining: {heart_count}   ", end="\r")
+                
+                time.sleep(0.1)
+
             except Exception as e:
                 print(f"\nInternal loop Error details: {type(e).__name__} - {e}")
-
                 time.sleep(0.5)
     finally:
         if arduino.is_open:
             arduino.close()
             print("Arduino connection closed. Exiting...")
+
+if __name__ == "__main__":
+    under_attack_by_image()
