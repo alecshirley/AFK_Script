@@ -1,0 +1,52 @@
+import urllib.request
+import sys
+
+NTFY_TOPIC = "mc_heart_alert"
+
+def send_ntfy_notification(message_text):
+
+    url = f"https://ntfy.sh/{NTFY_TOPIC}"
+
+    headers = {
+        "Title": "Minecraft Health Alert",
+        "Priority": "high",
+        #"Tags": "warning,heart"
+    }
+
+    print(f"Connecting to ntfy server at {url}...")
+
+    try:
+        req = urllib.request.Request(
+            url, data=message_text.encode('utf-8'),
+            headers=headers
+        )
+
+        with urllib.request.urlopen(req, timeout=3.0) as response:
+            print(f"\n SUCCESS! The server has acepted the message.")
+            print(f"Sent text: '{message_text}'")
+            print("Check your phone app right now!")
+            
+    except Exception as e:
+        print("\n❌ CONNECTION FAILED!")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Details: {e}")
+        print("\nTroubleshooting tips:")
+        print("1. Check if your computer has working internet.")
+        print("2. Make sure your firewall or antivirus isn't blocking Python.")
+
+if __name__ == "__main__":
+    print("--- NTFY STANDALONE COMMUNICATIONS TEST ---")
+    print("Press Enter to send the test alert, or type 'exit' to quit.")
+    
+    while True:
+        user_input = input("\nType a message to send [Default: Hello!]: ").strip()
+        
+        if user_input.lower() == 'exit':
+            print("Exiting test tool.")
+            sys.exit()
+            
+        # If user just hits enter, use a default greeting
+        if not user_input:
+            user_input = "Hello! Your script is working perfectly! 👋"
+            
+        send_ntfy_notification(user_input)
