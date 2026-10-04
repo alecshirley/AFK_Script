@@ -14,7 +14,7 @@ NTFY_TOPIC = "mc_heart_alert"
 pyautogui.useImageNotFoundException(False)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-IMAGE_TO_FIND = os.path.join(SCRIPT_DIR, 'full_health.png').replace('\\', '/')
+IMAGE_TO_FIND = os.path.join(SCRIPT_DIR, 'full_heart.png').replace('\\', '/')
 CONFIDENCE_THRESHOLD = 0.85
 
 arduino = serial.Serial(port=arduino_port, baudrate=baud_rate, timeout=1)
@@ -29,27 +29,79 @@ def send_command(command):
 def send_ntfy_notification(message):
     """Send a push notification directly to your phone using ntfy."""
     try:
-        url = f"https://ntfy.sh{NTFY_TOPIC}"
+        url = f"https://ntfy.sh/{NTFY_TOPIC}"
         headers = {
             "title": "Minecraft Health Alert",
             "Priority": "high",
-            "Tags": "warning,heart"
+            #"Tags": "warning,heart"
         }
         req = urllib.request.Request(url, data=message.encode('utf-8'), headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=1.5) as response:
             print(f"\n[ntfy] Notification sent: '{message}'")
     except Exception as e:
         print(f"\n[ntfy] Failed to send notification: {e}")
 
+def group_overlapping_hearts(locations, w, h, proximity=5):
+    hearts = []
+    for pt in zip(*locations[::-1]):
+        is_duplicate = False
+        for (hx, hy) in hearts:
+            if abs(pt[0] - hx) < proximity and abs(pt[1] - hy) < proximity:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            hearts.append((pt[0], pt[1]))
+    return hearts
+
+def find_hearts_multi_scale(screen_bgr, template_gray, heart_mask=None):
+    best_count = 0
+    best_locations = []
+
+    for scale in np.linspace(0.5, 3.0, 25):
+        w = int(template_gray.shape[1] * scale)
+        h = int(template_gray.shape[0] * scale)
+
+        if w < 5 or h < 5:
+            continue
+
+        resized_template = cv2.resize(template_gray, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        if heart_mask is not None:
+            resized_mask = cv2.resize(heart_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            result = cv2.matchTemplate(screen_bgr, resized_template, cv2.TM_CCOEFF_NORMED, mask=resized_mask)
+        else:
+            result = cv2.matchTemplate(screen_bgr, resized_template, cv2.TM_CCOEFF_NORMED)
+
+        locations = np.where(result >= CONFIDENCE_THRESHOLD)
+        unique_hearts = group_overlapping_hearts(locations, proximity=w)
+
+        if 5 <= len(unique_hearts) <= 12:
+            return len(unique_hearts)
+            
+        if len(unique_hearts) > best_count:
+            best_count = len(unique_hearts)
+            
+    return best_count
+
 def under_attack_by_image():
     print("AFK watcher has started... Press Ctrl+C in the terminal to stop.")
 
-    heart_template = cv2.imread(IMAGE_TO_FIND, cv2.IMREAD_GRAYSCALE)
+    heart_template = cv2.imread(IMAGE_TO_FIND, cv2.IMREAD_UNCHANGED)
     if heart_template is None:
         print(f"Error: Could not load the image at {IMAGE_TO_FIND}. check the file name.")
         return
 
-    w, h = heart_template.shape[::-1]
+    if len(heart_template.shape) == 3 and heart_template.shape[2] == 4 and heart_template.shape[2] == 4:
+        template_rgb = heart_template[:, :, :3]
+        heart_mask = heart_template[:, :, 3]
+    else:
+        heart_mask = None
+        if len(heart_template.shape) == 3:
+            heart_gray = cv2.cvtColor(heart_template, cv2.COLOR_BGR2GRAY)
+        else:
+            heart_gray = heart_template.copy()
+
+    w, h = heart_gray.shape[::-1]
     has_taken_damage = False
 
     try:
@@ -57,19 +109,20 @@ def under_attack_by_image():
             try:
                 screenshot = pyautogui.screenshot()
                 screen_np = np.array(screenshot)
-                screenbgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
-                screen_gray = cv2.cvtColor(screenbgr, cv2.COLOR_BGR2GRAY)
+                screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+                screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
 
-                result = cv2.matchTemplate(screen_gray, heart_template, cv2.TM_CCOEFF_NORMED)
-                locations = np.where(result >= CONFIDENCE_THRESHOLD)
+                heart_count = find_hearts_multi_scale(screen_gray, heart_gray, heart_mask)
 
-                rectangles = []
-                for pt in zip(*locations[::-1]):
-                    rectangles.append([int(pt[0]), int(pt[1]), int(w), int(h)])
-                    rectangles.append([int(pt[0]), int(pt[1]), int(w), int(h)])
-
-                rectangles, weight = cv2.groupRectangles(rectangles, groupThreshold=1, eps=0.2)
-                heart_count = len(rectangles)
+                if heart_count == 0:
+                    print("Scanning... No health bar found on screen (Is the game minimized?)  ", end="\r")
+                    
+                    # Generates a debug view file inside your directory
+                    debug_path = os.path.join(SCRIPT_DIR, 'debug_view.png')
+                    cv2.imwrite(debug_path, screen_bgr)
+                    
+                    time.sleep(0.5)
+                    continue
 
                 if heart_count >= 10:
                     has_taken_damage = False
@@ -79,9 +132,11 @@ def under_attack_by_image():
                     has_taken_damage = True
                     print(f"\n[!] Damage detected! Hearts remaining: {heart_count}. Sending notification...")
                     send_ntfy_notification(f"You took damage in Minecraft! Hearts remaining: {heart_count}.")
-                if heart_count < 5:
+
+                if 0 < heart_count < 5:
                     print(f"\n[!] Critical health! Hearts remaining: {heart_count}. Sending notification and pausing the game...")
                     print("Activating physical motor trigger...")
+
                     send_ntfy_notification(f"Critical health! Hearts remaining: {heart_count}. Pausing the game...")
 
                     reply1 = send_command("PAUSE")
